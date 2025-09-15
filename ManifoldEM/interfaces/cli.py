@@ -78,7 +78,7 @@ def get_parser():
     cc_parser.add_argument("input_file", type=str)
     add_relevant_params(cc_parser, ProjectLevel.FIND_CCS)
 
-    el_parser = subparsers.add_parser("calc-probabilities", help="8: Calculate probability landscape",
+    el_parser = subparsers.add_parser("probability-landscape", help="8: Calculate probability landscape",
                                       formatter_class=ArgumentDefaultsHelpFormatter)
     el_parser.add_argument("input_file", type=str)
     add_relevant_params(el_parser, ProjectLevel.PROBABILITY_LANDSCAPE)
@@ -294,7 +294,7 @@ _funcs = {
     "psi-analysis": psi_analysis,
     "nlsa-movie": nlsa_movie,
     "find-ccs": find_conformational_coordinates,
-    "calc-probabilities": probability_landscape,
+    "probability-landscape": probability_landscape,
     "trajectory": compute_trajectory,
     "mrcs2mrc": mrcs2mrc,
     "denoise": denoise,

@@ -63,7 +63,7 @@ def parse_star(starfile, skip, keep_index=False):
     headers = []
     foundheader = False
     ln = 0
-    with open(starfile, 'rU') as f:
+    with open(starfile, 'r') as f:
         for l in f:
             if ln < skip:
                 ln += 1
@@ -123,7 +123,7 @@ def parse_star_optics(starfile:str, keep_index: bool=False):
     headers = []
     foundheader = False
     ln = 0
-    with open(starfile, 'rU') as f:
+    with open(starfile, 'r') as f:
         for l in f:
             if l.startswith("_rln"):
                 foundheader = True
