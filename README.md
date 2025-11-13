@@ -57,6 +57,26 @@ problems if you later install packages into this environment with `conda install
 recommended to keep an environment purely for `ManifoldEM`.
 
 
+## Metal GPU Acceleration (Apple Silicon)
+
+ManifoldEM now supports GPU acceleration on Apple Silicon Macs (M1, M2, M3, M4, etc.) using Apple's MLX framework. This can provide **2-10x speedup** for distance calculations, the most computationally intensive step in the pipeline.
+
+To enable Metal GPU acceleration:
+
+```bash
+# Install with Metal GPU support
+pip install "manifoldem[metal] @ git+https://github.com/flatironinstitute/ManifoldEM"
+```
+
+Metal GPU acceleration is **enabled by default** when available and will automatically fall back to CPU on non-Apple Silicon systems. For more details, configuration options, and performance benchmarking, see [docs/METAL_GPU_ACCELERATION.md](docs/METAL_GPU_ACCELERATION.md).
+
+**Quick check if Metal is available:**
+```python
+from ManifoldEM.metal_backend import is_metal_available
+print(f"Metal GPU: {is_metal_available()}")
+```
+
+
 ## Running without 3D acceleration
 Some environments might not allow hardware 3D acceleration, such as via X forwarding or most
 VNC/virtual desktop environments. To work around this, you can disable any 3D visualization

@@ -72,6 +72,10 @@ gui = [
     "PyQt5",
     "vtk",
 ]
+# Metal GPU acceleration for Apple Silicon Macs
+metal = [
+    "mlx>=0.20.0",
+]
 
 [project.scripts]
 manifold-cli = "ManifoldEM.interfaces.cli:main"

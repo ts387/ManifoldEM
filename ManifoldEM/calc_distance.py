@@ -25,6 +25,7 @@ from ManifoldEM.util import (
     get_CTFs,
     rotate_fill,
 )
+from ManifoldEM.metal_backend import get_backend
 
 """
 Copyright (c) UWM, Ali Dashti 2016 (matlab version)
@@ -250,6 +251,17 @@ def get_distance_CTF_local(
     ]  # size of bin; ind are the indexes of particles in that bin
     image_is_mirrored = data_store.get_prds().image_is_mirrored
 
+    # Get Metal GPU backend (respects params.use_metal_gpu setting)
+    metal = get_backend()
+    metal_originally_enabled = metal.enabled
+    if not params.use_metal_gpu:
+        metal.enabled = False
+
+    if metal.is_available():
+        _logger.info(f"Using Metal GPU acceleration for distance calculation (prd with {n_particles} particles)")
+    elif metal_originally_enabled and not params.use_metal_gpu:
+        _logger.info(f"Metal GPU available but disabled by params.use_metal_gpu setting")
+
     # auxiliary variables
     n_pix = params.ms_num_pixels
 
@@ -305,8 +317,8 @@ def get_distance_CTF_local(
         if image_is_mirrored[particle_index]:
             img = np.flipud(img)
 
-        # Apply the filter
-        img = ifft2(fft2(img) * G).real
+        # Apply the filter (using Metal GPU if available)
+        img = metal.real(metal.ifft2(metal.fft2(img) * G))
 
         # Get the psi angle
         rotations[i_part] = -get_psi(quats[:, i_part], avg_orientation_vec) - psi_p
@@ -327,17 +339,17 @@ def get_distance_CTF_local(
         params.ms_amplitude_contrast_ratio,
     )
 
-    # use wiener filter
+    # use wiener filter (using Metal GPU if available)
     img_avg = np.zeros((n_pix, n_pix))
     wiener_dom = -get_wiener(CTF)
     for i_part in range(n_particles):
         img = img_all[i_part, :, :]
         img = (img - img.mean()) / img.std()
-        img_f = fft2(img)
+        img_f = metal.fft2(img)
         fourier_images[i_part, :, :] = img_f
         CTF_i = CTF[i_part, :, :]
         img_f_wiener = img_f * (CTF_i / wiener_dom)
-        img_avg = img_avg + ifft2(img_f_wiener).real
+        img_avg = img_avg + metal.real(metal.ifft2(img_f_wiener))
 
     # plain and phase-flipped averages
     # April 2020, msk2 = 1 when there is no volume mask
@@ -346,14 +358,10 @@ def get_distance_CTF_local(
     fourier_images = fourier_images.reshape(n_particles, n_pix**2)
     CTF = CTF.reshape(n_particles, n_pix**2)
 
-    # fancy BLAS way to do D[i,j] = np.sum(np.abs(CTF[i, :] * fourier_image[j,:] - CTF[j, :] * fourier_image[i, :])**2)
-    # FIXME (RB): Numba could, in theory, avoid all of these large temporaries, but I was struggling to make it actually work efficiently
-    # The test C++ code is considerably faster with no temporaries and large numbers of particles, so should revisit
-    CTFfy = CTF.conj() * fourier_images
-    distances = np.dot((np.abs(CTF) ** 2), (np.abs(fourier_images) ** 2).T)
-    distances = (
-        distances + distances.T - 2 * np.real(np.dot(CTFfy, CTFfy.conj().transpose()))
-    )
+    # Compute distance matrices using Metal GPU acceleration if available
+    # This computes D[i,j] = np.sum(np.abs(CTF[i, :] * fourier_image[j,:] - CTF[j, :] * fourier_image[i, :])**2)
+    # NOTE: Metal GPU acceleration provides significant speedup on Apple Silicon Macs
+    distances = metal.compute_distance_matrices(fourier_images, CTF)
 
     distances[np.diag_indices(n_particles)] = 0.0
 
@@ -368,6 +376,9 @@ def get_distance_CTF_local(
         rotations=rotations,
         image_filter=G,
     )
+
+    # Restore original Metal backend state
+    metal.enabled = metal_originally_enabled
 
 
 def _construct_input_data(prd_list, thresholded_indices, quats_full, defocus):

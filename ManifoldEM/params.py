@@ -57,6 +57,9 @@ class Params:
     ncpu: Annotated[
         int, ParamInfo("Number of processes to use for multiprocessing", True)
     ] = 1
+    use_metal_gpu: Annotated[
+        bool, ParamInfo("Enable Metal GPU acceleration on Apple Silicon Macs", True, [ProjectLevel.CALC_DISTANCE])
+    ] = True
     avg_vol_file: Annotated[str, ParamInfo("Average volume file (e.g., .mrc)")] = ""
     img_stack_file: Annotated[str, ParamInfo("Image stack file (e.g., .mrcs)")] = ""
     align_param_file: Annotated[str, ParamInfo("Alignment file (e.g., .star)")] = ""
