@@ -23,10 +23,13 @@ The Metal backend accelerates the following operations in the distance calculati
    - Complex conjugate operations
    - The main computational bottleneck in `calc_distance`
 
-These operations are typically 2-10x faster on Apple Silicon GPUs compared to CPU, depending on:
-- Number of particles per projection direction bin
-- Image size (number of pixels)
+Performance improvements depend on:
+- Number of particles per projection direction bin (best with >50 particles)
+- Image size (number of pixels, best with >64x64)
 - GPU model (M1 vs M2 vs M3/M4)
+- Data transfer overhead (GPU memory ↔ CPU memory)
+
+**Note**: For small particle counts (<10 particles) or small images, CPU may be faster due to GPU transfer overhead.
 
 ## Installation
 
@@ -67,7 +70,8 @@ Metal GPU acceleration is **enabled by default** when available. ManifoldEM will
 You can verify Metal is available by checking the log output during `calc-distance`:
 
 ```
-INFO: Using Metal GPU acceleration for distance calculation (prd with 150 particles)
+Computing the distances...
+Using Metal GPU acceleration (Apple Silicon)
 ```
 
 ### Disabling Metal GPU Acceleration
@@ -88,18 +92,19 @@ params.save()
 use_metal_gpu = false
 ```
 
-3. **Programmatically**:
+### Validating Metal GPU Results
+
+To verify that Metal GPU produces the same results as CPU computation, you can enable validation mode:
+
 ```python
-from ManifoldEM import metal_backend
+from ManifoldEM.metal_backend import get_backend
 
-# Temporarily disable Metal
-metal_backend.disable_metal()
-
-# Your computation here...
-
-# Re-enable Metal
-metal_backend.enable_metal()
+backend = get_backend()
+# This will compare GPU results with CPU and warn if they differ significantly
+result = backend.compute_distance_matrices(fourier_images, CTF, validate=True)
 ```
+
+This is useful for verifying numerical accuracy after updates or debugging issues.
 
 ### Checking Metal Availability
 
@@ -174,11 +179,31 @@ ManifoldEM uses Apple's [MLX framework](https://ml-explore.github.io/mlx/build/h
 The `ManifoldEM.metal_backend` module provides GPU-accelerated implementations of:
 
 - `fft2()` and `ifft2()` - 2D Fast Fourier Transforms
+- `batch_fft2_filter()` - Batch FFT filtering for multiple images (reduces transfer overhead)
 - `matmul()` - Matrix multiplication
-- `compute_distance_matrices()` - Specialized distance matrix computation
+- `compute_distance_matrices()` - Specialized distance matrix computation with optional validation
 - `abs_squared()`, `conj()`, `real()` - Complex array operations
 
 All operations automatically fall back to NumPy/SciPy if Metal is unavailable.
+
+### Thread Safety
+
+The Metal backend is designed to be thread-safe:
+- No global state is mutated during computation
+- The `use_metal_gpu` parameter is passed explicitly to worker functions
+- Safe for use with Python's `multiprocessing.Pool`
+- Each worker process has independent backend state
+
+### Numerical Validation
+
+The `compute_distance_matrices()` function supports an optional `validate=True` parameter that:
+- Computes results on both GPU and CPU
+- Compares results and warns if relative difference exceeds 1e-6
+- Useful for verifying numerical accuracy
+
+```python
+distances = backend.compute_distance_matrices(fourier_images, CTF, validate=True)
+```
 
 ## Troubleshooting
 

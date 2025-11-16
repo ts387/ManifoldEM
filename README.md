@@ -59,7 +59,7 @@ recommended to keep an environment purely for `ManifoldEM`.
 
 ## Metal GPU Acceleration (Apple Silicon)
 
-ManifoldEM now supports GPU acceleration on Apple Silicon Macs (M1, M2, M3, M4, etc.) using Apple's MLX framework. This can provide **2-10x speedup** for distance calculations, the most computationally intensive step in the pipeline.
+ManifoldEM now supports GPU acceleration on Apple Silicon Macs (M1, M2, M3, M4, etc.) using Apple's MLX framework. This can provide significant speedups for distance calculations, particularly for larger particle counts.
 
 To enable Metal GPU acceleration:
 
@@ -68,7 +68,12 @@ To enable Metal GPU acceleration:
 pip install "manifoldem[metal] @ git+https://github.com/flatironinstitute/ManifoldEM"
 ```
 
-Metal GPU acceleration is **enabled by default** when available and will automatically fall back to CPU on non-Apple Silicon systems. For more details, configuration options, and performance benchmarking, see [docs/METAL_GPU_ACCELERATION.md](docs/METAL_GPU_ACCELERATION.md).
+Metal GPU acceleration is **enabled by default** when available and will automatically fall back to CPU on non-Apple Silicon systems. Performance improvements depend on:
+- Particle count per projection direction bin (best for >50 particles)
+- Image size (best for >64x64 pixels)
+- GPU model and thermal conditions
+
+For more details, configuration options, and performance considerations, see [docs/METAL_GPU_ACCELERATION.md](docs/METAL_GPU_ACCELERATION.md).
 
 **Quick check if Metal is available:**
 ```python

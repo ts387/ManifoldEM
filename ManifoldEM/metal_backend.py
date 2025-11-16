@@ -34,21 +34,38 @@ except ImportError:
     _logger.info("MLX not available - using CPU fallback for all operations")
 
 
+def _ensure_mlx_imported():
+    """Ensure MLX modules are imported. Returns (mx, mx_fft) or raises ImportError."""
+    if not _MLX_AVAILABLE:
+        raise ImportError("MLX is not available")
+    import mlx.core as mx
+    import mlx.core.fft as mx_fft
+    return mx, mx_fft
+
+
 class MetalBackend:
     """
     Metal GPU acceleration backend with automatic fallback to CPU.
 
     Provides drop-in replacements for NumPy/SciPy operations that can be
     accelerated on Apple Silicon GPUs via MLX.
+
+    Note: This class is designed to be thread-safe. The `enabled` property
+    should not be mutated during parallel execution.
     """
 
     def __init__(self):
-        self.enabled = _MLX_AVAILABLE
+        self._mlx_available = _MLX_AVAILABLE
         self.device = _METAL_DEVICE if _MLX_AVAILABLE else None
 
+    @property
+    def enabled(self) -> bool:
+        """Check if Metal GPU acceleration is currently enabled."""
+        return self._mlx_available
+
     def is_available(self) -> bool:
-        """Check if Metal GPU acceleration is available."""
-        return self.enabled
+        """Check if Metal GPU acceleration is available (alias for enabled)."""
+        return self._mlx_available
 
     def to_device(self, array: np.ndarray) -> Any:
         """
@@ -64,8 +81,9 @@ class MetalBackend:
         mlx.core.array or np.ndarray
             Array on GPU if Metal is available, otherwise original array
         """
-        if not self.enabled:
+        if not self._mlx_available:
             return array
+        mx, _ = _ensure_mlx_imported()
         return mx.array(array)
 
     def to_numpy(self, array: Any) -> np.ndarray:
@@ -82,7 +100,7 @@ class MetalBackend:
         np.ndarray
             NumPy array on CPU
         """
-        if not self.enabled or isinstance(array, np.ndarray):
+        if not self._mlx_available or isinstance(array, np.ndarray):
             return array
         return np.array(array)
 
@@ -100,13 +118,14 @@ class MetalBackend:
         np.ndarray
             2D FFT of input array
         """
-        if not self.enabled:
+        if not self._mlx_available:
             from scipy.fftpack import fft2
             return fft2(array)
 
-        # Transfer to GPU, compute FFT, transfer back
+        mx, mx_fft = _ensure_mlx_imported()
         gpu_array = mx.array(array)
         result = mx_fft.fft2(gpu_array)
+        mx.eval(result)  # Force evaluation
         return np.array(result)
 
     def ifft2(self, array: np.ndarray) -> np.ndarray:
@@ -123,14 +142,62 @@ class MetalBackend:
         np.ndarray
             2D inverse FFT of input array
         """
-        if not self.enabled:
+        if not self._mlx_available:
             from scipy.fftpack import ifft2
             return ifft2(array)
 
-        # Transfer to GPU, compute inverse FFT, transfer back
+        mx, mx_fft = _ensure_mlx_imported()
         gpu_array = mx.array(array)
         result = mx_fft.ifft2(gpu_array)
+        mx.eval(result)  # Force evaluation
         return np.array(result)
+
+    def batch_fft2_filter(self, images: np.ndarray, filter_kernel: np.ndarray) -> np.ndarray:
+        """
+        Batch 2D FFT filtering with Metal GPU acceleration.
+
+        Applies FFT, multiplies by filter kernel, and applies inverse FFT for all images at once.
+        This is more efficient than individual operations due to reduced GPU transfer overhead.
+
+        Parameters
+        ----------
+        images : np.ndarray
+            Input 3D array of images, shape (n_images, height, width)
+        filter_kernel : np.ndarray
+            2D filter kernel in frequency domain, shape (height, width)
+
+        Returns
+        -------
+        np.ndarray
+            Filtered images (real part), shape (n_images, height, width)
+        """
+        if not self._mlx_available:
+            from scipy.fftpack import fft2, ifft2
+            result = np.zeros_like(images, dtype=np.float64)
+            for i in range(images.shape[0]):
+                result[i] = ifft2(fft2(images[i]) * filter_kernel).real
+            return result
+
+        mx, mx_fft = _ensure_mlx_imported()
+
+        # Single transfer to GPU
+        gpu_images = mx.array(images)
+        gpu_filter = mx.array(filter_kernel)
+
+        # Batch FFT (MLX handles 3D arrays as batch of 2D)
+        fft_images = mx_fft.fft2(gpu_images)
+
+        # Apply filter (broadcasting)
+        filtered = fft_images * gpu_filter
+
+        # Batch inverse FFT
+        result = mx_fft.ifft2(filtered)
+
+        # Extract real part and transfer back
+        result_real = mx.real(result)
+        mx.eval(result_real)  # Force evaluation before transfer
+
+        return np.array(result_real)
 
     def matmul(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
         """
@@ -148,13 +215,14 @@ class MetalBackend:
         np.ndarray
             Matrix product of a and b
         """
-        if not self.enabled:
+        if not self._mlx_available:
             return np.dot(a, b)
 
-        # Transfer to GPU, compute matmul, transfer back
+        mx, _ = _ensure_mlx_imported()
         gpu_a = mx.array(a)
         gpu_b = mx.array(b)
         result = mx.matmul(gpu_a, gpu_b)
+        mx.eval(result)
         return np.array(result)
 
     def abs_squared(self, array: np.ndarray) -> np.ndarray:
@@ -173,11 +241,13 @@ class MetalBackend:
         np.ndarray
             Absolute value squared of input
         """
-        if not self.enabled:
+        if not self._mlx_available:
             return np.abs(array) ** 2
 
+        mx, _ = _ensure_mlx_imported()
         gpu_array = mx.array(array)
         result = mx.abs(gpu_array) ** 2
+        mx.eval(result)
         return np.array(result)
 
     def conj(self, array: np.ndarray) -> np.ndarray:
@@ -194,11 +264,13 @@ class MetalBackend:
         np.ndarray
             Complex conjugate of input
         """
-        if not self.enabled:
+        if not self._mlx_available:
             return np.conj(array)
 
+        mx, _ = _ensure_mlx_imported()
         gpu_array = mx.array(array)
         result = mx.conjugate(gpu_array)
+        mx.eval(result)
         return np.array(result)
 
     def real(self, array: np.ndarray) -> np.ndarray:
@@ -215,17 +287,20 @@ class MetalBackend:
         np.ndarray
             Real part of input
         """
-        if not self.enabled:
+        if not self._mlx_available:
             return array.real
 
+        mx, _ = _ensure_mlx_imported()
         gpu_array = mx.array(array)
         result = mx.real(gpu_array)
+        mx.eval(result)
         return np.array(result)
 
     def compute_distance_matrices(
         self,
         fourier_images: np.ndarray,
-        CTF: np.ndarray
+        CTF: np.ndarray,
+        validate: bool = False
     ) -> np.ndarray:
         """
         Compute distance matrices for image comparison with Metal GPU acceleration.
@@ -239,14 +314,16 @@ class MetalBackend:
             Fourier transforms of images, shape (n_particles, n_pixels^2)
         CTF : np.ndarray
             Contrast transfer functions, shape (n_particles, n_pixels^2)
+        validate : bool, default=False
+            If True, compare GPU result with CPU result and warn if difference is large
 
         Returns
         -------
         np.ndarray
             Distance matrix of shape (n_particles, n_particles)
         """
-        if not self.enabled:
-            # CPU fallback - original implementation
+        # CPU fallback implementation (also used for validation)
+        def cpu_compute():
             CTFfy = CTF.conj() * fourier_images
             distances = np.dot((np.abs(CTF) ** 2), (np.abs(fourier_images) ** 2).T)
             distances = (
@@ -254,10 +331,15 @@ class MetalBackend:
             )
             return distances
 
+        if not self._mlx_available:
+            return cpu_compute()
+
+        mx, _ = _ensure_mlx_imported()
+
         # GPU-accelerated version using MLX
         _logger.debug("Computing distance matrices on Metal GPU")
 
-        # Transfer data to GPU
+        # Transfer data to GPU (single transfer for efficiency)
         gpu_fourier = mx.array(fourier_images)
         gpu_ctf = mx.array(CTF)
 
@@ -278,8 +360,23 @@ class MetalBackend:
             mx.matmul(CTFfy, mx.conjugate(CTFfy).T)
         )
 
-        # Transfer back to CPU as NumPy array
-        return np.array(distances)
+        # Force evaluation and transfer back to CPU
+        mx.eval(distances)
+        result = np.array(distances)
+
+        # Optional validation against CPU result
+        if validate:
+            cpu_result = cpu_compute()
+            max_diff = np.max(np.abs(result - cpu_result))
+            rel_diff = max_diff / (np.max(np.abs(cpu_result)) + 1e-10)
+            if rel_diff > 1e-6:
+                _logger.warning(
+                    f"Metal GPU distance computation differs from CPU by {rel_diff:.2e} (max abs diff: {max_diff:.2e})"
+                )
+            else:
+                _logger.debug(f"Metal GPU validation passed (rel diff: {rel_diff:.2e})")
+
+        return result
 
 
 # Global singleton instance
@@ -318,10 +415,13 @@ def enable_metal() -> bool:
     -------
     bool
         True if Metal was successfully enabled
+
+    Note
+    ----
+    This function is deprecated. Metal is automatically enabled if available.
     """
     if _MLX_AVAILABLE:
-        _backend.enabled = True
-        _logger.info("Metal GPU acceleration enabled")
+        _logger.info("Metal GPU acceleration is available")
         return True
     else:
         _logger.warning("Cannot enable Metal: MLX not available")
@@ -329,6 +429,11 @@ def enable_metal() -> bool:
 
 
 def disable_metal():
-    """Disable Metal GPU acceleration and use CPU fallback."""
-    _backend.enabled = False
-    _logger.info("Metal GPU acceleration disabled, using CPU fallback")
+    """
+    Disable Metal GPU acceleration and use CPU fallback.
+
+    Note
+    ----
+    This function is deprecated. Use params.use_metal_gpu = False instead.
+    """
+    _logger.warning("disable_metal() is deprecated. Use params.use_metal_gpu = False instead.")

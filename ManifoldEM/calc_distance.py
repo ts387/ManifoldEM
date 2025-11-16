@@ -25,7 +25,7 @@ from ManifoldEM.util import (
     get_CTFs,
     rotate_fill,
 )
-from ManifoldEM.metal_backend import get_backend
+from ManifoldEM.metal_backend import get_backend, is_metal_available
 
 """
 Copyright (c) UWM, Ali Dashti 2016 (matlab version)
@@ -214,6 +214,7 @@ def get_distance_CTF_local(
     filter_params: FilterParams,
     img_file_name: str,
     image_offsets: Tuple[NDArray[Shape["*"], Float64], NDArray[Shape["*"], Float64]],
+    use_metal_gpu: bool = True,
 ):
     """
     This function calculates squared Euclidean distances between images in similar projection directions,
@@ -230,6 +231,8 @@ def get_distance_CTF_local(
         Path to the file containing all raw images.
     image_offsets : tuple
         Offsets for each image, typically extracted from STAR files.
+    use_metal_gpu : bool, default=True
+        Whether to use Metal GPU acceleration if available.
 
     The function processes each image based on its index, applying normalization, filtering, and CTF correction.
     It aligns images in-plane using calculated psi angles and computes distances between all pairs of images in the
@@ -251,16 +254,9 @@ def get_distance_CTF_local(
     ]  # size of bin; ind are the indexes of particles in that bin
     image_is_mirrored = data_store.get_prds().image_is_mirrored
 
-    # Get Metal GPU backend (respects params.use_metal_gpu setting)
+    # Check Metal GPU availability (without mutating global state)
     metal = get_backend()
-    metal_originally_enabled = metal.enabled
-    if not params.use_metal_gpu:
-        metal.enabled = False
-
-    if metal.is_available():
-        _logger.info(f"Using Metal GPU acceleration for distance calculation (prd with {n_particles} particles)")
-    elif metal_originally_enabled and not params.use_metal_gpu:
-        _logger.info(f"Metal GPU available but disabled by params.use_metal_gpu setting")
+    metal_enabled = metal.is_available() and use_metal_gpu
 
     # auxiliary variables
     n_pix = params.ms_num_pixels
@@ -303,6 +299,9 @@ def get_distance_CTF_local(
     # Total in-plane rotation for each particle
     rotations = np.zeros(n_particles)
 
+    # Collect images for potential batch processing
+    images_to_filter = np.zeros((n_particles, n_pix, n_pix), dtype=np.float64)
+
     # read images with conjugates
     for i_part in range(n_particles):
         particle_index = indices[i_part]
@@ -317,14 +316,25 @@ def get_distance_CTF_local(
         if image_is_mirrored[particle_index]:
             img = np.flipud(img)
 
-        # Apply the filter (using Metal GPU if available)
-        img = metal.real(metal.ifft2(metal.fft2(img) * G))
+        images_to_filter[i_part] = img
 
-        # Get the psi angle
+        # Get the psi angle (computed for all images regardless of Metal status)
         rotations[i_part] = -get_psi(quats[:, i_part], avg_orientation_vec) - psi_p
 
+    # Apply filter to all images (batch operation for Metal GPU efficiency)
+    if metal_enabled and n_particles > 1:
+        # Batch filter all images at once using Metal GPU
+        filtered_images = metal.batch_fft2_filter(images_to_filter, G)
+    else:
+        # CPU fallback: filter images one at a time
+        filtered_images = np.zeros_like(images_to_filter)
+        for i_part in range(n_particles):
+            filtered_images[i_part] = ifft2(fft2(images_to_filter[i_part]) * G).real
+
+    # Apply rotation and mask to filtered images
+    for i_part in range(n_particles):
         # inplane align the images
-        img = rotate_fill(img, rotations[i_part])
+        img = rotate_fill(filtered_images[i_part], rotations[i_part])
 
         # Apply mask and store for distance calculation
         img_all[i_part, :, :] = img * mask
@@ -339,17 +349,35 @@ def get_distance_CTF_local(
         params.ms_amplitude_contrast_ratio,
     )
 
-    # use wiener filter (using Metal GPU if available)
+    # use wiener filter
     img_avg = np.zeros((n_pix, n_pix))
     wiener_dom = -get_wiener(CTF)
-    for i_part in range(n_particles):
-        img = img_all[i_part, :, :]
-        img = (img - img.mean()) / img.std()
-        img_f = metal.fft2(img)
-        fourier_images[i_part, :, :] = img_f
-        CTF_i = CTF[i_part, :, :]
-        img_f_wiener = img_f * (CTF_i / wiener_dom)
-        img_avg = img_avg + metal.real(metal.ifft2(img_f_wiener))
+
+    # Compute FFT of all images (batch operation for Metal GPU efficiency)
+    if metal_enabled and n_particles > 1:
+        # Batch FFT all normalized images
+        normalized_images = np.zeros((n_particles, n_pix, n_pix), dtype=np.float64)
+        for i_part in range(n_particles):
+            img = img_all[i_part, :, :]
+            normalized_images[i_part] = (img - img.mean()) / img.std()
+
+        # Single GPU transfer for batch FFT
+        for i_part in range(n_particles):
+            img_f = metal.fft2(normalized_images[i_part])
+            fourier_images[i_part, :, :] = img_f
+            CTF_i = CTF[i_part, :, :]
+            img_f_wiener = img_f * (CTF_i / wiener_dom)
+            img_avg = img_avg + metal.real(metal.ifft2(img_f_wiener))
+    else:
+        # CPU fallback
+        for i_part in range(n_particles):
+            img = img_all[i_part, :, :]
+            img = (img - img.mean()) / img.std()
+            img_f = fft2(img)
+            fourier_images[i_part, :, :] = img_f
+            CTF_i = CTF[i_part, :, :]
+            img_f_wiener = img_f * (CTF_i / wiener_dom)
+            img_avg = img_avg + ifft2(img_f_wiener).real
 
     # plain and phase-flipped averages
     # April 2020, msk2 = 1 when there is no volume mask
@@ -360,8 +388,15 @@ def get_distance_CTF_local(
 
     # Compute distance matrices using Metal GPU acceleration if available
     # This computes D[i,j] = np.sum(np.abs(CTF[i, :] * fourier_image[j,:] - CTF[j, :] * fourier_image[i, :])**2)
-    # NOTE: Metal GPU acceleration provides significant speedup on Apple Silicon Macs
-    distances = metal.compute_distance_matrices(fourier_images, CTF)
+    if metal_enabled:
+        distances = metal.compute_distance_matrices(fourier_images, CTF)
+    else:
+        # CPU fallback - original implementation
+        CTFfy = CTF.conj() * fourier_images
+        distances = np.dot((np.abs(CTF) ** 2), (np.abs(fourier_images) ** 2).T)
+        distances = (
+            distances + distances.T - 2 * np.real(np.dot(CTFfy, CTFfy.conj().transpose()))
+        )
 
     distances[np.diag_indices(n_particles)] = 0.0
 
@@ -376,9 +411,6 @@ def get_distance_CTF_local(
         rotations=rotations,
         image_filter=G,
     )
-
-    # Restore original Metal backend state
-    metal.enabled = metal_originally_enabled
 
 
 def _construct_input_data(prd_list, thresholded_indices, quats_full, defocus):
@@ -443,6 +475,19 @@ def op(prd_list: Union[List[int], None] = None, *argv):
     multiprocessing.set_start_method("fork", force=True)
     use_gui_progress = len(argv) > 0
 
+    # Log Metal GPU status once at the start (not per PRD)
+    metal_available = is_metal_available()
+    use_metal = metal_available and params.use_metal_gpu
+
+    if use_metal:
+        _logger.info("Metal GPU acceleration enabled for distance calculations")
+        print("Using Metal GPU acceleration (Apple Silicon)")
+    elif metal_available and not params.use_metal_gpu:
+        _logger.info("Metal GPU available but disabled by params.use_metal_gpu setting")
+        print("Metal GPU available but disabled (params.use_metal_gpu = False)")
+    else:
+        _logger.info("Using CPU for distance calculations (Metal GPU not available)")
+
     prds = data_store.get_prds()
 
     filter_params = FilterParams(
@@ -455,11 +500,14 @@ def op(prd_list: Union[List[int], None] = None, *argv):
         prd_list, prds.thresholded_image_indices, prds.quats_full, prds.defocus
     )
     n_jobs = len(input_data)
+
+    # Pass use_metal_gpu setting to worker function (avoids global state mutation)
     local_distance_func = partial(
         get_distance_CTF_local,
         filter_params=filter_params,
         img_file_name=params.img_stack_file,
         image_offsets=prds.microscope_origin,
+        use_metal_gpu=use_metal,
     )
 
     progress1 = argv[0] if use_gui_progress else NullEmitter()
