@@ -322,6 +322,7 @@ def get_distance_CTF_local(
         rotations[i_part] = -get_psi(quats[:, i_part], avg_orientation_vec) - psi_p
 
     # Apply filter to all images (batch operation for Metal GPU efficiency)
+    # Skip Metal for single particle to avoid GPU transfer overhead
     if metal_enabled and n_particles > 1:
         # Batch filter all images at once using Metal GPU
         filtered_images = metal.batch_fft2_filter(images_to_filter, G)
@@ -354,16 +355,22 @@ def get_distance_CTF_local(
     wiener_dom = -get_wiener(CTF)
 
     # Compute FFT of all images (batch operation for Metal GPU efficiency)
+    # Skip Metal for single particle to avoid GPU transfer overhead
     if metal_enabled and n_particles > 1:
-        # Batch FFT all normalized images
+        # Normalize all images (with epsilon to prevent division by zero)
         normalized_images = np.zeros((n_particles, n_pix, n_pix), dtype=np.float64)
         for i_part in range(n_particles):
             img = img_all[i_part, :, :]
-            normalized_images[i_part] = (img - img.mean()) / img.std()
+            img_std = img.std()
+            # Add small epsilon to prevent division by zero for constant images
+            normalized_images[i_part] = (img - img.mean()) / (img_std + 1e-10)
 
-        # Single GPU transfer for batch FFT
+        # Batch FFT all normalized images at once
+        fourier_images_batch = metal.batch_fft2(normalized_images)
+
+        # Apply Wiener filter and accumulate average
         for i_part in range(n_particles):
-            img_f = metal.fft2(normalized_images[i_part])
+            img_f = fourier_images_batch[i_part]
             fourier_images[i_part, :, :] = img_f
             CTF_i = CTF[i_part, :, :]
             img_f_wiener = img_f * (CTF_i / wiener_dom)
@@ -372,7 +379,9 @@ def get_distance_CTF_local(
         # CPU fallback
         for i_part in range(n_particles):
             img = img_all[i_part, :, :]
-            img = (img - img.mean()) / img.std()
+            img_std = img.std()
+            # Add small epsilon to prevent division by zero for constant images
+            img = (img - img.mean()) / (img_std + 1e-10)
             img_f = fft2(img)
             fourier_images[i_part, :, :] = img_f
             CTF_i = CTF[i_part, :, :]

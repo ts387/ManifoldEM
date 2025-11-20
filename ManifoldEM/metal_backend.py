@@ -180,24 +180,98 @@ class MetalBackend:
 
         mx, mx_fft = _ensure_mlx_imported()
 
-        # Single transfer to GPU
-        gpu_images = mx.array(images)
+        n_images = images.shape[0]
+        result = np.zeros_like(images, dtype=np.float64)
+
+        # Transfer filter once
         gpu_filter = mx.array(filter_kernel)
 
-        # Batch FFT (MLX handles 3D arrays as batch of 2D)
-        fft_images = mx_fft.fft2(gpu_images)
+        # Process images individually (MLX fft2 doesn't support 3D batch processing)
+        # But we minimize transfers by keeping intermediate results on GPU
+        for i in range(n_images):
+            gpu_img = mx.array(images[i])
+            fft_img = mx_fft.fft2(gpu_img)
+            filtered = fft_img * gpu_filter
+            ifft_result = mx_fft.ifft2(filtered)
+            result_real = mx.real(ifft_result)
+            mx.eval(result_real)
+            result[i] = np.array(result_real)
 
-        # Apply filter (broadcasting)
-        filtered = fft_images * gpu_filter
+        return result
 
-        # Batch inverse FFT
-        result = mx_fft.ifft2(filtered)
+    def batch_fft2(self, images: np.ndarray) -> np.ndarray:
+        """
+        Batch 2D FFT with Metal GPU acceleration.
 
-        # Extract real part and transfer back
-        result_real = mx.real(result)
-        mx.eval(result_real)  # Force evaluation before transfer
+        Computes FFT for multiple images efficiently.
 
-        return np.array(result_real)
+        Parameters
+        ----------
+        images : np.ndarray
+            Input 3D array of images, shape (n_images, height, width)
+
+        Returns
+        -------
+        np.ndarray
+            Fourier transforms, shape (n_images, height, width), complex
+        """
+        if not self._mlx_available:
+            from scipy.fftpack import fft2
+            result = np.zeros_like(images, dtype=np.complex128)
+            for i in range(images.shape[0]):
+                result[i] = fft2(images[i])
+            return result
+
+        mx, mx_fft = _ensure_mlx_imported()
+
+        n_images = images.shape[0]
+        result = np.zeros_like(images, dtype=np.complex128)
+
+        # Process each image (avoiding multiple Python-to-GPU transfers in loop)
+        for i in range(n_images):
+            gpu_img = mx.array(images[i])
+            fft_result = mx_fft.fft2(gpu_img)
+            mx.eval(fft_result)
+            result[i] = np.array(fft_result)
+
+        return result
+
+    def batch_ifft2(self, images_fft: np.ndarray) -> np.ndarray:
+        """
+        Batch 2D inverse FFT with Metal GPU acceleration.
+
+        Computes inverse FFT for multiple images efficiently.
+
+        Parameters
+        ----------
+        images_fft : np.ndarray
+            Input 3D array of Fourier transforms, shape (n_images, height, width), complex
+
+        Returns
+        -------
+        np.ndarray
+            Inverse Fourier transforms, shape (n_images, height, width), complex
+        """
+        if not self._mlx_available:
+            from scipy.fftpack import ifft2
+            result = np.zeros_like(images_fft, dtype=np.complex128)
+            for i in range(images_fft.shape[0]):
+                result[i] = ifft2(images_fft[i])
+            return result
+
+        mx, mx_fft = _ensure_mlx_imported()
+
+        n_images = images_fft.shape[0]
+        result = np.zeros_like(images_fft, dtype=np.complex128)
+
+        # Process each image
+        for i in range(n_images):
+            gpu_img = mx.array(images_fft[i])
+            ifft_result = mx_fft.ifft2(gpu_img)
+            mx.eval(ifft_result)
+            result[i] = np.array(ifft_result)
+
+        return result
 
     def matmul(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
         """

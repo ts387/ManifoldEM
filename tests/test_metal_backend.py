@@ -63,6 +63,49 @@ class TestMetalBackendCPUFallback:
 
         np.testing.assert_allclose(result, expected, rtol=1e-10)
 
+    def test_batch_fft2(self):
+        """Test batch FFT."""
+        n_images = 10
+        size = 32
+        images = np.random.randn(n_images, size, size)
+
+        result = self.backend.batch_fft2(images)
+
+        # Compute expected result
+        expected = np.zeros_like(images, dtype=np.complex128)
+        for i in range(n_images):
+            expected[i] = fft2(images[i])
+
+        np.testing.assert_allclose(result, expected, rtol=1e-10)
+
+    def test_batch_ifft2(self):
+        """Test batch inverse FFT."""
+        n_images = 10
+        size = 32
+        # Create complex input
+        images_fft = np.random.randn(n_images, size, size) + 1j * np.random.randn(n_images, size, size)
+
+        result = self.backend.batch_ifft2(images_fft)
+
+        # Compute expected result
+        expected = np.zeros_like(images_fft, dtype=np.complex128)
+        for i in range(n_images):
+            expected[i] = ifft2(images_fft[i])
+
+        np.testing.assert_allclose(result, expected, rtol=1e-10)
+
+    def test_batch_fft_roundtrip(self):
+        """Test batch FFT -> batch IFFT roundtrip."""
+        n_images = 5
+        size = 16
+        images = np.random.randn(n_images, size, size)
+
+        fft_result = self.backend.batch_fft2(images)
+        ifft_result = self.backend.batch_ifft2(fft_result)
+
+        # Should get back original images (real part)
+        np.testing.assert_allclose(ifft_result.real, images, rtol=1e-10)
+
     def test_matmul_matches_numpy(self):
         """Test matrix multiplication."""
         a = np.random.randn(50, 100)
