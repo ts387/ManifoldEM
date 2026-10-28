@@ -15,6 +15,8 @@ The main hurdle for installation are the packages required for the GUI, which
 uses PyQt5 and TraitsUI, with data visualizations achieved via Mayavi (3D) and Matplotlib (2D).
 The majority of backend calculations are performed using NumPy, which has fewer installation hiccups, thus we
 recommend the CLI for those with trouble installing the GUI-dependencies.
+To try ManifoldEM without installing anything, use the [Google Colab notebook](ManifoldEM_Colab.ipynb), which runs the
+CLI pipeline of this tutorial in the browser.
 
 Installation should work with in any modern Python/conda environment (Python 3.9+, though `mayavi` and
 `pyqt` packages don't always immediately work with the most recent version of Python). If you don't

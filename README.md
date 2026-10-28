@@ -57,6 +57,16 @@ problems if you later install packages into this environment with `conda install
 recommended to keep an environment purely for `ManifoldEM`.
 
 
+## Running in Google Colab
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/flatironinstitute/ManifoldEM/blob/main/tutorial/ManifoldEM_Colab.ipynb)
+
+[`tutorial/ManifoldEM_Colab.ipynb`](tutorial/ManifoldEM_Colab.ipynb) installs ManifoldEM in a Colab runtime and
+walks through the whole pipeline without the GUI: data checks, binning and thresholds, the per-PD embedding, a PD
+browser with the NLSA movies, anchor selection, the energy landscape, and 3D volumes along the conformational
+coordinate. It runs a synthetic demo dataset end to end by default, and also takes the RyR1 tutorial data or your
+own STAR file and particle stack.
+
+
 ## Running without 3D acceleration
 Some environments might not allow hardware 3D acceleration, such as via X forwarding or most
 VNC/virtual desktop environments. To work around this, you can disable any 3D visualization
